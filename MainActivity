@@ -1,0 +1,567 @@
+package com.join.topone.homepage;
+
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+
+import javax.security.auth.PrivateCredentialPermission;
+
+import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.app.ActivityManager;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.media.AudioManager;
+import android.os.Bundle;
+import android.support.v4.app.Fragment;
+import android.support.v4.app.FragmentActivity;
+import android.support.v4.app.FragmentManager;
+import android.support.v4.app.FragmentTransaction;
+import android.text.TextUtils;
+import android.util.Log;
+import android.view.KeyEvent;
+import android.view.View;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
+import android.widget.RelativeLayout;
+import android.widget.Toast;
+
+import com.baidu.mobstat.StatService;
+import com.hyphenate.EMCallBack;
+import com.hyphenate.EMError;
+import com.hyphenate.EMMessageListener;
+import com.hyphenate.chat.EMClient;
+import com.hyphenate.chat.EMMessage;
+import com.hyphenate.chat.EMTextMessageBody;
+import com.hyphenate.chat.EMMessage.ChatType;
+import com.hyphenate.exceptions.HyphenateException;
+import com.join.topone.EMMessageHelp;
+import com.join.topone.PushOrderStatusEnum;
+import com.join.topone.R;
+import com.join.topone.Resource;
+import com.join.topone.SettingsName;
+import com.join.topone.ShuttleDriverApplication;
+import com.join.topone.bean.LocationInfo;
+import com.join.topone.dao.HandleDao;
+import com.join.topone.dao.PushOrderDao;
+import com.join.topone.order.OrderActivity;
+import com.join.topone.push.PushHandler;
+import com.join.topone.takeorder.NoTakeOrderActivity;
+import com.join.topone.takeorder.TakeOrderActivity;
+import com.join.topone.takeorder.TakeOrderDetailActivity;
+import com.join.topone.takeorder.TakeOrderResultActivity;
+import com.join.topone.takeorder.TakeOrderResultDefeatActivity;
+import com.join.topone.usercenter.SelfCenterActivity;
+import com.join.topone.util.CommonUtil;
+import com.join.topone.util.LogWriter;
+import com.join.topone.util.NotificationHelper;
+import com.join.topone.util.UtilDate;
+import com.lidroid.xutils.ViewUtils;
+import com.lidroid.xutils.view.annotation.ViewInject;
+import com.lidroid.xutils.view.annotation.event.OnRadioGroupCheckedChange;
+
+@SuppressLint("NewApi") public class MainActivity extends FragmentActivity {
+	public static Activity instance;
+	private ActivityManager activityManager;
+	private FragmentManager fragmentManager;
+	private Bundle bundle;
+	private long exitTime = 0;
+	private int checkedId;
+	/** 是否已经调用过exitApp方法，不加此判断在退出登录时会调用两次，解除广播时会异常 */
+	private boolean isExitApp;
+
+	@ViewInject(R.id.main_tab)
+	RadioGroup radioGroup;
+	@ViewInject(R.id.all_tab_layout)
+	RelativeLayout allLayout;
+	private static final String TAG = "MainActivity";
+
+	protected void onCreate(Bundle savedInstanceState) {
+		super.onCreate(savedInstanceState);
+		setContentView(R.layout.tab_layout);
+		ViewUtils.inject(this);
+		instance = this;
+
+		activityManager = (ActivityManager) this
+				.getSystemService(Context.ACTIVITY_SERVICE);
+
+		fragmentManager = getSupportFragmentManager();
+		// 默认展示主页
+		// setFragmentById(R.id.tab_bt_homepage);
+
+		// 恢复缓存数据
+		Resource.restoreCache();
+		// 设置推送相关参数
+		setPushParas();
+		// 注册领单结果广播
+		registerBoradcastReceiver();
+		// 启动定位服务
+		ShuttleDriverApplication.startGPSService();
+		// 启动上传服务
+		ShuttleDriverApplication.startUpLoadService();
+
+		// if (Resource.gpsService == null) {
+		// Intent serviceIntent = new Intent(GPSService.class.getName());
+		// this.startService(serviceIntent);
+		// // bindService(serviceIntent, serviceConn,
+		// // Context.BIND_AUTO_CREATE);
+		// }
+		if (!EMMessageHelp.isLoggedInBefore()) {
+			//直接登入，在登入的try cathch中捕獲可能未註冊的異常
+        	EMMessageHelp.Login(String.valueOf(CommonUtil.getEnDriverID()));
+		}else {
+			EMMessageHelp.cleanAllConversations();
+		}
+		//注册监听事件
+		ShuttleDriverApplication.startMessageListener();
+	}
+
+	// MainActivity已经定义为单任务，需要添加此方法获取bundle
+	@Override
+	protected void onNewIntent(Intent intent) {
+		super.onNewIntent(intent);
+		// 必须调用此行代码，否则getIntent()取到的是旧数据
+		setIntent(intent);
+		// 获取参数
+		bundle = intent.getExtras();
+	}
+	
+	private void setPushParas() {
+		SharedPreferences sharedPreferences = getSharedPreferences(
+				Resource.SharedPreferencesFile, Context.MODE_PRIVATE);
+		if (sharedPreferences.getBoolean(SettingsName.IsReceivePush.toString(),
+				true)) {
+			// 设置推送别名
+			PushHandler.setPushAlias(Resource.EnDriverID);
+			Set<Integer> days = new HashSet<Integer>();
+			// 0表示星期天，1表示星期一，以此类推。 （7天制，Set集合里面的int范围为0到6）
+			if (sharedPreferences.getBoolean("mCbMon", true)) {
+				days.add(1);
+			}
+			if (sharedPreferences.getBoolean("mCbTue", true)) {
+				days.add(2);
+			}
+			if (sharedPreferences.getBoolean("mCbWed", true)) {
+				days.add(3);
+			}
+			if (sharedPreferences.getBoolean("mCbThu", true)) {
+				days.add(4);
+			}
+			if (sharedPreferences.getBoolean("mCbFri", true)) {
+				days.add(5);
+			}
+			if (sharedPreferences.getBoolean("mCbSat", true)) {
+				days.add(6);
+			}
+			if (sharedPreferences.getBoolean("mCbSun", true)) {
+				days.add(0);
+			}
+			PushHandler.setPushTime(days,
+					sharedPreferences.getInt("startTime", 0),
+					sharedPreferences.getInt("endTime", 23));
+		} else {
+			PushHandler.setAliasEmpty();
+		}
+	}
+
+	@OnRadioGroupCheckedChange(R.id.main_tab)
+	public void onCheckedChanged(RadioGroup group, int checkedId) {
+		setFragmentById(checkedId);
+	}
+
+	private void setFragmentById(int checkedId) {
+		if (instance == null) {
+			return;
+		}
+		this.checkedId = checkedId;
+		FragmentTransaction transaction = fragmentManager.beginTransaction();
+		// 实例化需要的fragment
+		Fragment fragment = null;
+		switch (checkedId) {
+		case R.id.tab_bt_homepage:
+			HandleDao.saveNewHandler(MainActivity.this, Resource.HANDLER, "HomePageActivity", "首页", "", "", "", false);
+			fragment = new HomePageActivity();
+			break;
+		case R.id.tab_bt_takeorder:
+			HandleDao.saveNewHandler(MainActivity.this, Resource.HANDLER, "TakeOrderActivity", "领单", "", "", "", false);
+			fragment = new TakeOrderActivity();
+			break;
+		case R.id.tab_bt_order:
+			HandleDao.saveNewHandler(MainActivity.this, Resource.HANDLER, "OrderActivity", "订单", "", "", "", false);
+			fragment = new OrderActivity();
+			break;
+		case R.id.tab_bt_selfcenter:
+			HandleDao.saveNewHandler(MainActivity.this, Resource.HANDLER, "SelfCenterActivity", "个人中心", "", "", "", false);
+			fragment = new SelfCenterActivity();
+			break;
+		}
+		transaction.replace(R.id.content, fragment);
+		transaction.commitAllowingStateLoss();
+	}
+
+	/**
+	 * 注册广播接收器
+	 */
+	public void registerBoradcastReceiver() {
+		// 注册广播
+		IntentFilter intentFilter = new IntentFilter();
+		intentFilter
+				.addAction(Resource.PUSH_ORDER_STATUS_CHANGE_BROADCAST_ACTION);
+		ShuttleDriverApplication.getApplication().registerReceiver(
+				takeOrderResultBroadcastReceiver, intentFilter);
+	}
+
+	private void updateStatus(String orderId, int newOrderStatus,
+			int successDriverID) {
+		if (newOrderStatus != PushOrderStatusEnum.NEW_ORDER.getValue()) {
+			// 停止倒计时
+			PushOrderDao.updateTimeFlag(orderId, false);
+			// 改状态
+			PushOrderDao.updateOrderStatus(orderId, newOrderStatus,
+					successDriverID);
+		}
+
+		// TakeOrderFragment已经有广播，如果是直接弹出领单列表页，会刷新弹出列表，返回后不能刷新当前页，故在此刷新
+		if (checkedId == R.id.tab_bt_takeorder) {
+			setFragmentById(checkedId);
+		}
+	}
+
+	/**
+	 * 
+	 * @param intent
+	 * @param orderId
+	 *            收到结果的领单订单ID
+	 * @param newOrderStatus
+	 *            订单的最新状态
+	 * @param isColseTakeDetail
+	 *            是否要关闭领单详情页
+	 */
+	private void updateStatusAndJump(Intent intent, String orderId,
+			int newOrderStatus, int successDriverID, boolean isColseTakeDetail) {
+		updateStatus(orderId, newOrderStatus, successDriverID);
+
+		// 关闭领单详情页
+		if (isColseTakeDetail) {
+			// 清空缓存的领单订单ID
+			Resource.EncryptTakeOrderID = "";
+			// 关闭领单详情页
+			if (TakeOrderDetailActivity.instance != null) {
+				TakeOrderDetailActivity.instance.finish();
+				TakeOrderDetailActivity.instance = null;
+			}
+		}
+
+		// 跳到结果页
+		if (newOrderStatus != PushOrderStatusEnum.RECEIVING.getValue()
+				&& newOrderStatus != PushOrderStatusEnum.NEW_ORDER.getValue()) {
+			if (newOrderStatus == PushOrderStatusEnum.RECEIVE_FAIL.getValue()) {
+				Intent defeatIntent = new Intent(
+						ShuttleDriverApplication.getApplication(),
+						TakeOrderResultDefeatActivity.class);
+				defeatIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+				defeatIntent.putExtras(intent.getExtras());
+				startActivity(defeatIntent);
+			} else {
+				// 如果原来显示的待支付页面，现在是成功状态，则关闭再弹出
+				if (newOrderStatus == PushOrderStatusEnum.RECEIVE_SUCCESS
+						.getValue()
+						&& orderId.equals(Resource.EncryptTakeOrderResultID)) {
+					if (TakeOrderResultActivity.instance != null) {
+						TakeOrderResultActivity.instance.finish();
+						TakeOrderResultActivity.instance = null;
+					}
+				}
+
+				// 成功、取消、未领单、待支付
+				Intent resultIntent = new Intent(
+						ShuttleDriverApplication.getApplication(),
+						TakeOrderResultActivity.class);
+				resultIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+				resultIntent.putExtras(intent.getExtras());
+				startActivity(resultIntent);
+			}
+		}
+	}
+
+	/**
+	 * 
+	 * @param orderId
+	 * @param newOrderStatus
+	 */
+	private void updateStatusAndNotification(String orderId,
+			int newOrderStatus, int successDriverID) {
+		updateStatus(orderId, newOrderStatus, successDriverID);
+
+		// 前台运行时不写消息到通知栏
+		if (CommonUtil.isRunningForeground(instance)) {
+			return;
+		}
+
+		// 单未查看过，更新通知栏的可领单数据
+		// 未查看的可领单个数
+		int canTakeCount = PushOrderDao.getUnreadCount(true);
+		// 未查看的不可领单个数
+		int cannotTakeCount = PushOrderDao.getUnreadCount(false);
+		if (canTakeCount + cannotTakeCount > 0) {
+			String message = "";
+			if (cannotTakeCount > 0) {
+				message = String.format(Locale.getDefault(),
+						"您有%d个新订单(%d个可领取,%d个已失效)", canTakeCount
+								+ cannotTakeCount, canTakeCount,
+						cannotTakeCount);
+			} else {
+				message = String.format(Locale.getDefault(), "您有%d个新订单",
+						canTakeCount);
+			}
+
+			// 更新通知栏，此时不播放声音
+			NotificationHelper.notify(this, 0, R.drawable.logo, "新订单通知", 0,
+					"新订单通知", message, NoTakeOrderActivity.class, null,
+					NotificationHelper.FLAG_AUTO_CANCEL);
+		} else {
+			// 清除通知
+			NotificationHelper.cancel(this, 0);
+		}
+	}
+
+	// 领单结果广播接收器
+	private BroadcastReceiver takeOrderResultBroadcastReceiver = new BroadcastReceiver() {
+
+		@Override
+		public void onReceive(Context context, Intent intent) {
+
+			String action = intent.getAction();
+			if (action
+					.equals(Resource.PUSH_ORDER_STATUS_CHANGE_BROADCAST_ACTION)) {
+				Log.i("TAG", "执行到6--Resource.EncryptTakeOrderID:"
+						+ Resource.EncryptTakeOrderID+"---orderID"+intent.getStringExtra("OrderID"));
+				// 状态改变后停止计时
+				if (intent.getExtras() != null) {
+					// String orderSN = intent.getStringExtra("OrderSN");
+					String orderId = intent.getStringExtra("OrderID");
+					int oldOrderStatus = intent.getIntExtra("OldOrderStatusID",
+							-1);
+					int newOrderStatus = intent
+							.getIntExtra("OrderStatusID", -1);
+					int successDriverID = intent.getIntExtra("SuccessDriverID",
+							-1);
+
+					// 正在查看领单详情
+					if (!TextUtils.isEmpty(Resource.EncryptTakeOrderID)) {
+						Log.i("TAG", "执行到7--Resource.EncryptTakeOrderID:"
+								+ Resource.EncryptTakeOrderID+"\norderId:"+orderId);
+						// 正在查看当前订单，关闭、并改状态、跳转·
+						if (orderId.equals(Resource.EncryptTakeOrderID)) {
+							updateStatusAndJump(intent, orderId,
+									newOrderStatus, successDriverID, true);
+						} else {
+							// 正在查看其他订单的详情，本地为领取中、待支付，跳结果页，不关闭详情页
+							if (oldOrderStatus == PushOrderStatusEnum.RECEIVING
+									.getValue()
+									|| oldOrderStatus == PushOrderStatusEnum.NO_PAYMENT
+											.getValue()) {
+								updateStatusAndJump(intent, orderId,
+										newOrderStatus, successDriverID, false);
+							} else {
+								updateStatusAndNotification(orderId,
+										newOrderStatus, successDriverID);
+							}
+						}
+					} else {// 在其他页面
+						// 领取中、待支付的订单，弹结果页
+						if (oldOrderStatus == PushOrderStatusEnum.RECEIVING
+								.getValue()
+								|| oldOrderStatus == PushOrderStatusEnum.NO_PAYMENT
+										.getValue()) {
+							updateStatusAndJump(intent, orderId,
+									newOrderStatus, successDriverID, false);
+						} else {
+							updateStatusAndNotification(orderId,
+									newOrderStatus, successDriverID);
+						}
+					}
+				}
+			}
+		}
+	};
+
+	// 再按一次退出程序
+	@SuppressLint("NewApi")
+	@Override
+	public boolean onKeyDown(int keyCode, KeyEvent event) {
+		AudioManager mAudioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+		int currentVolume = mAudioManager
+				.getStreamVolume(AudioManager.STREAM_MUSIC);
+
+		if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+			// 音量增大
+			mAudioManager.setStreamVolume(AudioManager.STREAM_MUSIC,
+					currentVolume + 1, 1);
+			return true;
+		} else if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+			// 音量减小
+			mAudioManager.setStreamVolume(AudioManager.STREAM_MUSIC,
+					currentVolume - 1, 1);
+			return true;
+		} else if (keyCode == KeyEvent.KEYCODE_BACK
+				&& event.getAction() == KeyEvent.ACTION_DOWN) {
+			if (bundle != null) {
+				if ("self_center_to_tab_bt_order"
+						.equals(bundle.getString("ID"))) {
+					RadioButton mRbSelfCenter = (RadioButton) MainActivity.this
+							.findViewById(R.id.tab_bt_selfcenter);
+					setFragmentById(R.id.tab_bt_selfcenter);
+					mRbSelfCenter.setChecked(true);
+					radioGroup.setVisibility(View.VISIBLE);
+					bundle = null;
+				}
+			} else {
+				if ((System.currentTimeMillis() - exitTime) > 2000) {
+
+					Toast.makeText(getApplicationContext(), "再按一次回到桌面",
+							Toast.LENGTH_SHORT).show();
+					exitTime = System.currentTimeMillis();
+				} else {
+
+					// 默认跳到系统桌面，使程序服务后台运行
+					Intent intent = new Intent(Intent.ACTION_MAIN);
+					intent.addCategory(Intent.CATEGORY_HOME);
+					intent.addCategory(Intent.CATEGORY_DEFAULT);
+					startActivity(intent);
+				}
+			}
+			return true;
+		}
+		return super.onKeyDown(keyCode, event);
+	}
+
+	@Override
+	public void onResume() {
+		super.onResume();
+		StatService.onResume(this);
+		// 模拟操作功能跳转过来时控制加载相应的Tab界面
+		if (bundle != null) {
+			String ID = bundle.getString("ID");
+			if (ID.equals("tab_bt_takeorder")) {
+				RadioButton mRbTakeOrder = (RadioButton) MainActivity.this
+						.findViewById(R.id.tab_bt_takeorder);
+				if (mRbTakeOrder.isChecked()) {
+					setFragmentById(R.id.tab_bt_takeorder);
+				} else {
+					mRbTakeOrder.performClick();
+				}
+
+				// bundle使用完毕后清空，防止界面跳转时错乱
+				bundle = null;
+			}
+			// 模拟操作跳转订单列表时相关操作
+			else if (ID.equals("tab_bt_order")) {
+				RadioButton mRbOrder = (RadioButton) MainActivity.this
+						.findViewById(R.id.tab_bt_order);
+				if (mRbOrder.isChecked()) {
+					setFragmentById(R.id.tab_bt_order);
+				} else {
+					mRbOrder.performClick();
+				}
+				// bundle使用完毕后清空，防止界面跳转时错乱
+				bundle = null;
+			}
+			// 从个人中心跳转订单列表时相关操作
+			else if (ID.equals("self_center_to_tab_bt_order")) {
+				RadioButton mRbOrder = (RadioButton) MainActivity.this
+						.findViewById(R.id.tab_bt_order);
+				if (mRbOrder.isChecked()) {
+					setFragmentById(R.id.tab_bt_order);
+				} else {
+					mRbOrder.performClick();
+				}
+				radioGroup.setVisibility(View.GONE);
+			} else if (ID.equals("tab_bt_selfcenter")) {
+				RadioButton mRbSelfCenter = (RadioButton) MainActivity.this
+						.findViewById(R.id.tab_bt_selfcenter);
+				if (mRbSelfCenter.isChecked()) {
+					// 不用刷新，切换回来即可
+					// setFragmentById(R.id.tab_bt_selfcenter);
+				} else {
+					mRbSelfCenter.performClick();
+				}
+
+				// bundle使用完毕后清空，防止界面跳转时错乱
+				bundle = null;
+			}
+		} else {
+			if (checkedId == 0) {
+				// 默认展示主页
+				setFragmentById(R.id.tab_bt_homepage);
+			} else {
+				// 在此页可见时，貌似放着不动也会触发onResume、onPause，原因未知，待观察
+				// 切换回来时刷新数据（主页当前位置需要刷新）
+				// 领单、订单页因为有Tab，如果切换到第二、三个Tab后，点击列表打开页面再返回会切换到第一个，故屏蔽掉刷新
+				if (checkedId == R.id.tab_bt_homepage) {
+					setFragmentById(checkedId);
+				}
+			}
+
+			// 第一次启动Resource.gpsService不会很快有值
+			if (Resource.gpsService != null) {
+				Resource.gpsService.initFrontService();
+			}
+		}
+	}
+
+	private void exitApp() {
+		if (isExitApp) {
+			return;
+		}
+		closeRy();
+
+//		ShuttleDriverApplication.getApplication().unregisterReceiver(
+//				takeOrderResultBroadcastReceiver);
+//		ShuttleDriverApplication.stopGPSService();
+
+		// 关闭推送
+		// PushHandler.setAliasEmpty();
+
+		killAll();
+		isExitApp = true;
+	}
+
+	@Override
+	public void onPause() {
+		super.onPause();
+		StatService.onPause(this);
+	}
+	@Override
+	protected void onResumeFragments() {
+		Resource.isOrderActivity = false;
+		super.onResumeFragments();
+	}
+	// 必须添加此方法，否则在“最近任务”快照中关闭时无法杀掉进程
+	@Override
+	protected void onDestroy(){
+		exitApp();
+		super.onDestroy();
+	}
+	// 按返回键退出时不会调用onDestroy方法
+	@Override
+	public void finish() {
+		exitApp();
+		super.finish();
+	}
+	
+	private void closeRy() {
+//		stopService(new Intent(
+//				cn.jpush.android.service.PushService.class.getName()));
+	}
+
+	@SuppressLint("NewApi")
+	public void killAll() {
+//		activityManager.killBackgroundProcesses("io.rong.push.service");
+//		activityManager.killBackgroundProcesses("com.top1.shuttledriver");
+	}
+}
